@@ -27,6 +27,8 @@
 
 #include <set>
 #include <string>
+#include <sstream>
+#include <iomanip>
 
 using mongo::BSONElement;
 using mongo::BSONObj;
@@ -61,6 +63,12 @@ vector<string> &split(const string &s, char delim, vector<string> &elems) {
         elems.push_back(item);
     }
     return elems;
+}
+
+inline ostream& reset(ostream& io) {
+   io.seekp(0);
+   io.clear();
+   return io;
 }
 
 namespace mongo {
@@ -258,17 +266,32 @@ namespace mongo {
 
     class ReplSetTest : public ClusterTest {
     public:
-        ReplSetTest(Shell *aMs, string anOpts) : ClusterTest(aMs, anOpts) {
+        static const string Opts;
+
+        ReplSetTest(Shell *aMs, string anOpts = Opts) : ClusterTest(aMs, anOpts) {
             var = "rs";
         }
         ~ReplSetTest(void) {
+
+        }
+        void start(void) {
+            ostringstream ss, js;
+            js.str("");
+            js << "var " << var << " = new ReplSetTest( " << opts << " );";
+            sh(js.str(), ss);
+            js.str("");
+            js << var << ".startSet();";
+            sh(js.str(), ss);
+            js.str("");
 
         }
     };
 
     class ShardingTest : public ClusterTest {
     public:
-        ShardingTest(Shell *aMs, string anOpts) : ClusterTest(aMs, anOpts) {
+        static const string Opts;
+
+        ShardingTest(Shell *aMs, string anOpts = Opts) : ClusterTest(aMs, anOpts) {
             var = "sc";
         }
         ~ShardingTest(void) {
@@ -293,6 +316,9 @@ namespace mongo {
     const int mongo::Shell::Retries = 10;
     const string mongo::Shell::Prompt = "> ";
     const string mongo::Shell::Bye = "bye\n";
+
+    const string mongo::ReplSetTest::Opts = "{ name: 'test', nodes: 3, startPort: 31000 }";
+    const string mongo::ShardingTest::Opts = "{ name: 'test', shards: 2, rs: { nodes: 3 }, mongos: 2, other: { separateConfig: true } }";
 }
 
 namespace mongo_test {
@@ -308,5 +334,11 @@ namespace mongo_test {
         ms->stop();
         delete ct;
         delete ms;
+        ostringstream ss;
+        ss << "1 2 3 4";
+        ASSERT_EQUALS("1 2 3 4", ss.str());
+        //ss << reset << "a b c";
+        ss << reset << "a b c";
+        ASSERT_EQUALS("a b c", ss.str());
     }
 }
