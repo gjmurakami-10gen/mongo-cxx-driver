@@ -65,10 +65,10 @@ vector<string> &split(const string &s, char delim, vector<string> &elems) {
     return elems;
 }
 
-inline ostream& reset(ostream& io) {
-   io.seekp(0);
-   io.clear();
-   return io;
+inline stringstream& ssclear(stringstream& ss) {
+   ss.str("");
+   ss.clear();
+   return ss;
 }
 
 namespace mongo {
@@ -91,7 +91,6 @@ namespace mongo {
 
         int sock;
         uint16_t port;
-        pid_t pid;
 
         Shell() {
             port = DefaultPort;
@@ -99,22 +98,26 @@ namespace mongo {
         }
 
         void spawn(const string& logFileName) {
-            if ((pid = fork()) == 0) {
+            pid_t pid;
+            (pid = fork()) != -1 || die("Shell spawn - fork error");
+            if (pid == 0) {
+                umask(0);
+                setsid() != -1 || die("Shell spawn - error on setsid");
                 int fdLog = open(logFileName.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0664);
                 fdLog != -1 || die("Shell spawn - error on open of log file for mongo shell");
                 dup2(fdLog, 1) != -1 || die("Shell spawn - error on dup of log file for stdout");
                 dup2(fdLog, 2) != -1 || die("Shell spawn - error on dup of log file for stderr");
-                int fdNull = open("/dev/null", O_RDONLY);
-                fdNull != -1 || die("Shell spawn - error on open of /dev/null");
-                dup2(fdNull, 0) != -1 || die("Shell spawn - error on dup of /dev/null for stdin");
-                setsid() != -1 || die("Shell spawn - error on setsid");
-                if ((pid = fork()) == 0) {
+                close(0);
+                (pid = fork()) != -1 || die("Shell spawn - fork error");
+                if (pid == 0) {
                     const char *envMongoShell = getenv("MONGO_SHELL");
                     string mongoShell( envMongoShell ? envMongoShell : "../mongo/mongo");
                     execv(mongoShell.c_str(), (char *const *)spawn_argvp);
                 }
-                exit(0);
+                _exit(0);
             }
+            int stat_loc;
+            waitpid(pid, &stat_loc, 0) != -1 || warn("Shell spawn - waitpid error");
         }
 
         Shell& connect(const string& logFileName) {
@@ -170,8 +173,6 @@ namespace mongo {
             puts("exit").read(Bye);
             shutdown(sock, SHUT_RDWR) != -1 || warn("Shell stop - shutdown error");
             close(sock) != -1 || warn("Shell stop - socket close error");
-            int stat_loc;
-            waitpid(pid, &stat_loc, 0) != -1 || warn("Shell stop - waitpid error");
             return *this;
         }
 
@@ -250,17 +251,18 @@ namespace mongo {
             return ms->x_s(js) == "object";
         }
         ClusterTest& ensureCluster(void) {
+            stringstream ss;
             if (exists())
-                restart();
+                restart(ss);
             else {
                 //FileUtils.mkdir_p(@opts[:dataPath])
-                start();
+                start(ss);
             }
             return *this;
         }
-        virtual void start(void) {
+        virtual void start(ostream& os) {
         }
-        virtual void restart(void) {
+        virtual void restart(ostream& os) {
         }
     };
 
@@ -274,16 +276,13 @@ namespace mongo {
         ~ReplSetTest(void) {
 
         }
-        void start(void) {
-            ostringstream ss, js;
-            js.str("");
-            js << "var " << var << " = new ReplSetTest( " << opts << " );";
-            sh(js.str(), ss);
-            js.str("");
-            js << var << ".startSet();";
-            sh(js.str(), ss);
-            js.str("");
-
+        void start(ostream& os) {
+            stringstream js;
+            ssclear(js) << "var " << var << " = new ReplSetTest( " << opts << " );";
+            sh(js.str(), os);
+            ssclear(js) << var << ".startSet();";
+            sh(js.str(), os);
+            ssclear(js) << var << ".initiate();";
         }
     };
 
@@ -334,11 +333,16 @@ namespace mongo_test {
         ms->stop();
         delete ct;
         delete ms;
-        ostringstream ss;
-        ss << "1 2 3 4";
-        ASSERT_EQUALS("1 2 3 4", ss.str());
-        //ss << reset << "a b c";
-        ss << reset << "a b c";
-        ASSERT_EQUALS("a b c", ss.str());
+    }
+    TEST(ShellTest, ReplSetTest) {
+        Shell *ms = new Shell();
+        string response = ms->x_s("1+2");
+        ASSERT_EQUALS("3\n", response);
+        ReplSetTest *rs = new ReplSetTest(ms, "");
+        bool exists = rs->exists();
+        ASSERT_EQUALS(0, exists);
+        ms->stop();
+        delete rs;
+        delete ms;
     }
 }
