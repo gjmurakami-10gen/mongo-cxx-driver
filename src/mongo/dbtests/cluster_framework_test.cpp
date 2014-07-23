@@ -54,6 +54,15 @@ bool die(const string& msg)
     return 0;
 }
 
+vector<string> &split(const string &s, char delim, vector<string> &elems) {
+    stringstream ss(s);
+    string item;
+    while (getline(ss, item, delim)) {
+        elems.push_back(item);
+    }
+    return elems;
+}
+
 namespace mongo {
     const char *spawn_argvp[] = {
         "mongo",
@@ -169,6 +178,115 @@ namespace mongo {
                result.resize(pos);
            return result;
         }
+
+        Shell& sh(const string& s, ostream& os) {
+            vector<string> lines;
+            split(s, '\n', lines);
+            for (vector<string>::iterator is = lines.begin(); is != lines.end(); is++) {
+                *is += '\n';
+                os.write(is->c_str(), is->length()).flush();
+                string result = x(*is);
+                os.write(result.c_str(), result.length()).flush();
+            }
+            return *this;
+        }
+    };
+
+    class ClusterTest;
+
+    class TestNode {
+    public:
+        ClusterTest *cluster;
+        string conn;
+        string var;
+        string hostPort;
+        string host;
+        uint16_t port;
+
+        TestNode(ClusterTest *aCluster, const string& aConn) {
+            cluster = aCluster;
+            conn = aConn;
+            //var = cluster->var;
+            hostPort = conn.substr(strlen("connection to "));
+            vector<string> vHostPort;
+            split(hostPort, ':', vHostPort);
+            host = vHostPort[0];
+            port = atoi(vHostPort[1].c_str());
+        }
+    };
+
+    class ClusterTest {
+    public:
+        Shell *ms;
+        string var;
+        string opts;
+
+        ClusterTest(Shell *aMs, string anOpts) {
+            ms = aMs;
+            var = "ct";
+            opts = anOpts;
+        }
+        virtual ~ClusterTest(void) {
+        }
+        string x(const string& s, string prompt = Shell::Prompt) {
+            return ms->x(s, prompt);
+        }
+        string x_s(const string& s, string prompt = Shell::Prompt) {
+            return ms->x_s(s, prompt);
+        }
+        Shell& sh(const string& s, ostream& os) {
+            return ms->sh(s, os);
+        }
+        bool exists(void) {
+            string js = "typeof " + var + ";";
+            return ms->x_s(js) == "object";
+        }
+        ClusterTest& ensureCluster(void) {
+            if (exists())
+                restart();
+            else {
+                //FileUtils.mkdir_p(@opts[:dataPath])
+                start();
+            }
+            return *this;
+        }
+        virtual void start(void) {
+        }
+        virtual void restart(void) {
+        }
+    };
+
+    class ReplSetTest : public ClusterTest {
+    public:
+        ReplSetTest(Shell *aMs, string anOpts) : ClusterTest(aMs, anOpts) {
+            var = "rs";
+        }
+        ~ReplSetTest(void) {
+
+        }
+    };
+
+    class ShardingTest : public ClusterTest {
+    public:
+        ShardingTest(Shell *aMs, string anOpts) : ClusterTest(aMs, anOpts) {
+            var = "sc";
+        }
+        ~ShardingTest(void) {
+
+        }
+    };
+
+    class Orchestrator {
+    public:
+        enum { Single, Replica, Sharded };
+
+
+        Orchestrator(int type, string opts) {
+
+        }
+        ~Orchestrator(void) {
+
+        }
     };
 
     const uint16_t mongo::Shell::DefaultPort = 30001;
@@ -181,10 +299,14 @@ namespace mongo_test {
     using namespace mongo;
 
     TEST(ShellTest, Basic) {
-        Shell *shell = new Shell();
-        string response = shell->x_s("1+2");
+        Shell *ms = new Shell();
+        string response = ms->x_s("1+2");
         ASSERT_EQUALS("3\n", response);
-        shell->stop();
-        delete shell;
+        ClusterTest *ct = new ClusterTest(ms, "");
+        bool exists = ct->exists();
+        ASSERT_EQUALS(0, exists);
+        ms->stop();
+        delete ct;
+        delete ms;
     }
 }
