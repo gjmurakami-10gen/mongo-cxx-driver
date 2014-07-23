@@ -215,6 +215,7 @@ namespace mongo {
         TestNode(ClusterTest *aCluster, const string& aConn) {
             cluster = aCluster;
             conn = aConn;
+            conn.erase(remove(conn.begin(), conn.end(), '\"'), conn.end());
             //var = cluster->var;
             hostPort = conn.substr(strlen("connection to "));
             vector<string> vHostPort;
@@ -222,7 +223,14 @@ namespace mongo {
             host = vHostPort[0];
             port = atoi(vHostPort[1].c_str());
         }
+        static vector<TestNode> vFromStringList(ClusterTest *aCluster, string sList);
     };
+
+    vector<TestNode> TestNode::vFromStringList(ClusterTest *aCluster, string sList) {
+        vector<TestNode> result;
+        cerr << "TestNode::vFromStringList sList: " << sList << endl;
+        return result;
+    }
 
     class ClusterTest {
     public:
@@ -251,18 +259,22 @@ namespace mongo {
             return ms->x_s(js) == "object";
         }
         ClusterTest& ensureCluster(void) {
-            stringstream ss;
             if (exists())
-                restart(ss);
+                restart();
             else {
                 //FileUtils.mkdir_p(@opts[:dataPath])
-                start(ss);
+                start();
             }
             return *this;
         }
-        virtual void start(ostream& os) {
+        virtual string start(void) {
+            return string();
         }
-        virtual void restart(ostream& os) {
+        virtual string restart(void) {
+            return string();
+        }
+        virtual string stop(void) {
+            return string();
         }
     };
 
@@ -276,13 +288,53 @@ namespace mongo {
         ~ReplSetTest(void) {
 
         }
-        void start(ostream& os) {
-            stringstream js;
+        string start(void) {
+            stringstream os, js;
             ssclear(js) << "var " << var << " = new ReplSetTest( " << opts << " );";
             sh(js.str(), os);
             ssclear(js) << var << ".startSet();";
             sh(js.str(), os);
+            os.str().find("ReplSetTest Starting") != string::npos || die("ReplSetTest start error on startSet");
             ssclear(js) << var << ".initiate();";
+            sh(js.str(), os);
+            os.str().find("Config now saved locally.  Should come online in about a minute.") != string::npos || die("ReplSetTest start error on initiate");
+            ssclear(js) << var << ".awaitReplication();";
+            sh(js.str(), os);
+            os.str().find("ReplSetTest awaitReplication: finished: all") != string::npos || die("ReplSetTest start error on awaitReplication");
+            return os.str();
+        }
+        string stop(void) {
+            stringstream os, js;
+            ssclear(js) << var << ".stopSet();";
+            sh(js.str(), os);
+            os.str().find("ReplSetTest stopSet *** Shut down repl set - test worked ***") != string::npos || die("ReplSetTest stop error on stopSet");
+            return os.str();
+        }
+        string restart(void) {
+            stringstream os, js;
+            ssclear(js) << var << ".restartSet();";
+            sh(js.str(), os);
+            ssclear(js) << var << ".awaitSecondaryNodes(30000);";
+            sh(js.str(), os);
+            ssclear(js) << var << ".awaitReplication(30000);";
+            sh(js.str(), os);
+            os.str().find("ReplSetTest awaitReplication: finished: all") != string::npos || die("ReplSetTest restart error on awaitReplication");
+            return os.str();
+        }
+        string status(void) {
+            stringstream js;
+            ssclear(js) << var << ".restartSet();";
+            return x_s(js.str());
+        }
+        string nodes(void) {
+            stringstream js;
+            ssclear(js) << var << ".nodes;";
+            return x_s(js.str());
+        }
+        TestNode primary(void) {
+            stringstream js;
+            ssclear(js) << var << ".getPrimary();";
+            return TestNode(this, x_s(js.str()));
         }
     };
 
@@ -334,13 +386,22 @@ namespace mongo_test {
         delete ct;
         delete ms;
     }
-    TEST(ShellTest, ReplSetTest) {
+    TEST(ReplSetTest, Basic) {
         Shell *ms = new Shell();
-        string response = ms->x_s("1+2");
+        string response;
+        response = ms->x_s("1+2");
         ASSERT_EQUALS("3\n", response);
-        ReplSetTest *rs = new ReplSetTest(ms, "");
+        ReplSetTest *rs = new ReplSetTest(ms);
         bool exists = rs->exists();
         ASSERT_EQUALS(0, exists);
+        stringstream ss;
+        response = rs->start();
+        response = rs->status();
+        cerr << "status:\n" << response;
+        vector<TestNode> nodes = TestNode::vFromStringList(rs, rs->nodes());
+        TestNode primary = rs->primary();
+        cerr << "primary.host_port: " << primary.hostPort << endl;
+        response = rs->stop();
         ms->stop();
         delete rs;
         delete ms;

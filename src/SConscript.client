@@ -389,7 +389,7 @@ libEnv.Depends(include_dbclienth_test_file, installAlias)
 include_dbclienth_test = installationTestEnv.Object(
     target='include_dbclienth_test',
     source=[include_dbclienth_test_file])
-libEnv.AlwaysBuild(include_dbclienth_test)
+#libEnv.AlwaysBuild(include_dbclienth_test)
 libEnv.NoCache(include_dbclienth_test)
 
 include_bsonh_test_file = 'mongo/client/include_bsonh_test.cpp'
@@ -397,7 +397,7 @@ libEnv.Depends(include_bsonh_test_file, installAlias)
 include_bsonh_test = installationTestEnv.Object(
     target='include_bsonh_test',
     source=[include_bsonh_test_file])
-libEnv.AlwaysBuild(include_bsonh_test)
+#libEnv.AlwaysBuild(include_bsonh_test)
 libEnv.NoCache(include_bsonh_test)
 
 libEnv.Alias('check-install-mongoclient', [

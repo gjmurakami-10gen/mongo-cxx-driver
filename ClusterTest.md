@@ -1,7 +1,15 @@
 TODO
 
-    available port
+    single mongod for Ruby
+    spawn _exit, fork error for Ruby and Perl
+    available port, also for Ruby and Perl
 
+Questions
+
+    why
+        libEnv.AlwaysBuild(include_dbclienth_test)
+        libEnv.AlwaysBuild(include_bsonh_test)
+         
 build
 
     scons --osx-version-min=10.9
