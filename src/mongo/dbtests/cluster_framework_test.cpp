@@ -18,6 +18,7 @@
 #include "mongo/client/dbclientinterface.h"
 #include "mongo/dbtests/mock/mock_replica_set.h"
 #include "mongo/unittest/unittest.h"
+#include "mongo/dbtests/picojson.h"
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -29,6 +30,7 @@
 #include <string>
 #include <sstream>
 #include <iomanip>
+#include <regex>
 
 using mongo::BSONElement;
 using mongo::BSONObj;
@@ -65,10 +67,38 @@ vector<string> &split(const string &s, char delim, vector<string> &elems) {
     return elems;
 }
 
+picojson::value toJSON(const string json)
+{
+    picojson::value v;
+    string err;
+    picojson::parse(v, json.c_str(), json.c_str() + json.length(), &err);
+    err.empty() || die(err.c_str());
+    return v;
+}
+
 inline stringstream& ssclear(stringstream& ss) {
    ss.str("");
    ss.clear();
    return ss;
+}
+
+string sub_to_json_start(const string s) {
+    regex rx("^[^[{]*");
+    return regex_replace(s, rx, string(""));
+}
+
+string gsub_isodate(const string s) {
+    regex rx("ISODate\\((\".+?\")\\)");
+    return regex_replace(s, rx, string("$1"));
+}
+
+string gsub_timestamp(const string s) {
+    regex rx("Timestamp\\((\\d+), \\d+\\)");
+    return regex_replace(s, rx, string("$1"));
+}
+
+string to_basic_json(const string s) {
+    return gsub_timestamp(gsub_isodate(sub_to_json_start(s)));
 }
 
 namespace mongo {
@@ -187,7 +217,9 @@ namespace mongo {
                result.resize(pos);
            return result;
         }
-
+        picojson::value x_json(const string& s, string prompt = Prompt) {
+            return toJSON(to_basic_json(x_s(s, prompt)));
+        }
         Shell& sh(const string& s, ostream& os) {
             vector<string> lines;
             split(s, '\n', lines);
@@ -223,12 +255,15 @@ namespace mongo {
             host = vHostPort[0];
             port = atoi(vHostPort[1].c_str());
         }
-        static vector<TestNode> vFromStringList(ClusterTest *aCluster, string sList);
+        static vector<TestNode> vFromStringList(ClusterTest *aCluster, picojson::value pj);
     };
 
-    vector<TestNode> TestNode::vFromStringList(ClusterTest *aCluster, string sList) {
+    vector<TestNode> TestNode::vFromStringList(ClusterTest *aCluster, picojson::value pj) {
         vector<TestNode> result;
-        cerr << "TestNode::vFromStringList sList: " << sList << endl;
+        vector<picojson::value> pVec = pj.get<picojson::array>();
+        for (vector<picojson::value>::iterator it = pVec.begin(); it != pVec.end(); it++) {
+            result.push_back(TestNode(aCluster, it->get<string>()));
+        }
         return result;
     }
 
@@ -250,6 +285,9 @@ namespace mongo {
         }
         string x_s(const string& s, string prompt = Shell::Prompt) {
             return ms->x_s(s, prompt);
+        }
+        picojson::value x_json(const string& s, string prompt = Shell::Prompt) {
+            return ms->x_json(s, prompt);
         }
         Shell& sh(const string& s, ostream& os) {
             return ms->sh(s, os);
@@ -274,6 +312,9 @@ namespace mongo {
             return string();
         }
         virtual string stop(void) {
+            return string();
+        }
+        virtual string uri(void) {
             return string();
         }
     };
@@ -321,20 +362,36 @@ namespace mongo {
             os.str().find("ReplSetTest awaitReplication: finished: all") != string::npos || die("ReplSetTest restart error on awaitReplication");
             return os.str();
         }
-        string status(void) {
+        picojson::value status(void) {
             stringstream js;
-            ssclear(js) << var << ".restartSet();";
-            return x_s(js.str());
+            ssclear(js) << var << ".status();";
+            return x_json(js.str());
         }
-        string nodes(void) {
+        vector<TestNode> nodes(void) {
             stringstream js;
             ssclear(js) << var << ".nodes;";
-            return x_s(js.str());
+            return TestNode::vFromStringList(this, x_json(js.str()));
         }
         TestNode primary(void) {
             stringstream js;
             ssclear(js) << var << ".getPrimary();";
             return TestNode(this, x_s(js.str()));
+        }
+        vector<TestNode> secondaries(void) {
+            stringstream js;
+            ssclear(js) << var << ".getSecondaries();";
+            return TestNode::vFromStringList(this, x_json(js.str()));
+        }
+        string uri(void) {
+            stringstream ss;
+            ss << "mongodb:://";
+            vector<TestNode> vNodes = nodes();
+            string delim = "";
+            for (vector<TestNode>::iterator it = vNodes.begin(); it != vNodes.end(); it++) {
+                ss << delim << it->hostPort;
+                delim = ",";
+            }
+            return ss.str();
         }
     };
 
@@ -388,22 +445,98 @@ namespace mongo_test {
     }
     TEST(ReplSetTest, Basic) {
         Shell *ms = new Shell();
-        string response;
-        response = ms->x_s("1+2");
-        ASSERT_EQUALS("3\n", response);
+        string sResponse;
+        sResponse = ms->x_s("1+2");
+        ASSERT_EQUALS("3\n", sResponse);
         ReplSetTest *rs = new ReplSetTest(ms);
         bool exists = rs->exists();
         ASSERT_EQUALS(0, exists);
         stringstream ss;
-        response = rs->start();
-        response = rs->status();
-        cerr << "status:\n" << response;
-        vector<TestNode> nodes = TestNode::vFromStringList(rs, rs->nodes());
+        sResponse = rs->start();
+
+        picojson::value jsonResponse;
+        jsonResponse = rs->status();
+        ASSERT_EQUALS(1, (int)jsonResponse.get<picojson::object>()["myState"].get<double>());
+        vector<TestNode> nodes = rs->nodes();
+        ASSERT_EQUALS(3, (int)nodes.size());
         TestNode primary = rs->primary();
-        cerr << "primary.host_port: " << primary.hostPort << endl;
-        response = rs->stop();
+        ASSERT_EQUALS(31000, primary.port);
+        vector<TestNode> secondaries = rs->secondaries();
+        ASSERT_EQUALS(2, (int)secondaries.size());
+        ASSERT_TRUE(rs->uri().find("mongodb://"));
+
+        sResponse = rs->stop();
         ms->stop();
         delete rs;
         delete ms;
+    }
+    TEST(PicoJSON, Basic) {
+        string json = "[\n\
+                       	\"connection to osprey.local:31000\",\n\
+                       	\"connection to osprey.local:31001\",\n\
+                       	\"connection to osprey.local:31002\"\n\
+                       ]";
+        picojson::value v = toJSON(json);
+        ASSERT_TRUE(v.is<picojson::array>());
+        vector<picojson::value> a = v.get<picojson::array>();
+        ASSERT_EQUALS(3, (int)a.size());
+        ASSERT_TRUE(a.front().is<string>());
+        stringstream ss;
+        ss << v;
+        ASSERT_EQUALS("[\"connection to osprey.local:31000\",\"connection to osprey.local:31001\",\"connection to osprey.local:31002\"]", ss.str());
+    }
+    TEST(ExtendedJSON, Basic) {
+        string json = "xyzzy\
+        {\n\
+            \"set\" : \"test\",\n\
+            \"date\" : ISODate(\"2014-07-24T15:02:15Z\"),\n\
+            \"myState\" : 1,\n\
+            \"members\" : [\n\
+                {\n\
+                    \"_id\" : 0,\n\
+                    \"name\" : \"osprey.local:31000\",\n\
+                    \"health\" : 1,\n\
+                    \"state\" : 1,\n\
+                    \"stateStr\" : \"PRIMARY\",\n\
+                    \"uptime\" : 22,\n\
+                    \"optime\" : Timestamp(1406214115, 1),\n\
+                    \"optimeDate\" : ISODate(\"2014-07-24T15:01:55Z\"),\n\
+                    \"electionTime\" : Timestamp(1406214125, 1),\n\
+                    \"electionDate\" : ISODate(\"2014-07-24T15:02:05Z\"),\n\
+                    \"self\" : true\n\
+                },\n\
+                {\n\
+                    \"_id\" : 1,\n\
+                    \"name\" : \"osprey.local:31001\",\n\
+                    \"health\" : 1,\n\
+                    \"state\" : 5,\n\
+                    \"stateStr\" : \"STARTUP2\",\n\
+                    \"uptime\" : 18,\n\
+                    \"optime\" : Timestamp(0, 0),\n\
+                    \"optimeDate\" : ISODate(\"1970-01-01T00:00:00Z\"),\n\
+                    \"lastHeartbeat\" : ISODate(\"2014-07-24T15:02:13Z\"),\n\
+                    \"lastHeartbeatRecv\" : ISODate(\"2014-07-24T15:02:14Z\"),\n\
+                    \"pingMs\" : 0,\n\
+                    \"lastHeartbeatMessage\" : \"initial sync need a member to be primary or secondary to do our initial sync\"\n\
+                },\n\
+                {\n\
+                    \"_id\" : 2,\n\
+                    \"name\" : \"osprey.local:31002\",\n\
+                    \"health\" : 1,\n\
+                    \"state\" : 5,\n\
+                    \"stateStr\" : \"STARTUP2\",\n\
+                    \"uptime\" : 18,\n\
+                    \"optime\" : Timestamp(0, 0),\n\
+                    \"optimeDate\" : ISODate(\"1970-01-01T00:00:00Z\"),\n\
+                    \"lastHeartbeat\" : ISODate(\"2014-07-24T15:02:13Z\"),\n\
+                    \"lastHeartbeatRecv\" : ISODate(\"2014-07-24T15:02:14Z\"),\n\
+                    \"pingMs\" : 0,\n\
+                    \"lastHeartbeatMessage\" : \"initial sync need a member to be primary or secondary to do our initial sync\"\n\
+                }\n\
+            ],\n\
+            \"ok\" : 1\n\
+        }\n\
+        ";
+        cout << "json regex:\n" << to_basic_json(json) << endl;
     }
 }
