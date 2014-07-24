@@ -45,20 +45,30 @@ using std::ostream;
 
 using namespace std;
 
-bool warn(const string& msg)
+static bool warn(const string& msg)
 {
     cerr << msg << ": " << strerror(errno) << endl;
     return 0;
 }
 
-bool die(const string& msg)
+static bool die(const string& msg)
 {
     warn(msg);
     exit(1);
     return 0;
 }
 
-vector<string> &split(const string &s, char delim, vector<string> &elems) {
+static int iscrlf( int c )
+{
+    return (c == '\r' || c == '\n');
+}
+
+static inline std::string& chomp(std::string &s) {
+        s.erase(std::find_if(s.rbegin(), s.rend(), std::not1(std::ptr_fun<int, int>(iscrlf))).base(), s.end());
+        return s;
+}
+
+static vector<string> &split(const string &s, char delim, vector<string> &elems) {
     stringstream ss(s);
     string item;
     while (getline(ss, item, delim)) {
@@ -67,7 +77,7 @@ vector<string> &split(const string &s, char delim, vector<string> &elems) {
     return elems;
 }
 
-picojson::value toJSON(const string json)
+static picojson::value toJSON(const string json)
 {
     picojson::value v;
     string err;
@@ -76,28 +86,28 @@ picojson::value toJSON(const string json)
     return v;
 }
 
-inline stringstream& ssclear(stringstream& ss) {
+static inline stringstream& ssclear(stringstream& ss) {
    ss.str("");
    ss.clear();
    return ss;
 }
 
-string sub_to_json_start(const string s) {
+static string sub_to_json_start(const string s) {
     regex rx("^[^[{]*");
     return regex_replace(s, rx, string(""));
 }
 
-string gsub_isodate(const string s) {
+static string gsub_isodate(const string s) {
     regex rx("ISODate\\((\".+?\")\\)");
     return regex_replace(s, rx, string("$1"));
 }
 
-string gsub_timestamp(const string s) {
+static string gsub_timestamp(const string s) {
     regex rx("Timestamp\\((\\d+), \\d+\\)");
     return regex_replace(s, rx, string("$1"));
 }
 
-string to_basic_json(const string s) {
+static string to_basic_json(const string s) {
     return gsub_timestamp(gsub_isodate(sub_to_json_start(s)));
 }
 
@@ -215,7 +225,7 @@ namespace mongo {
            size_t pos = result.rfind(prompt);
            if (pos != string::npos)
                result.resize(pos);
-           return result;
+           return chomp(result);
         }
         picojson::value x_json(const string& s, string prompt = Prompt) {
             return toJSON(to_basic_json(x_s(s, prompt)));
@@ -232,6 +242,11 @@ namespace mongo {
             return *this;
         }
     };
+
+    const uint16_t mongo::Shell::DefaultPort = 30001;
+    const int mongo::Shell::Retries = 10;
+    const string mongo::Shell::Prompt = "> ";
+    const string mongo::Shell::Bye = "bye\n";
 
     class ClusterTest;
 
@@ -319,6 +334,41 @@ namespace mongo {
         }
     };
 
+    class MongodTest : public ClusterTest {
+    public:
+        static const string Opts;
+
+        MongodTest(Shell *aMs, string anOpts = Opts) : ClusterTest(aMs, anOpts) {
+            var = "md";
+        }
+        ~MongodTest(void) {
+
+        }
+        string start(void) {
+            stringstream os, js;
+            ssclear(js) << "var " << var << " = new startMongodTest( " << opts << " );";
+            sh(js.str(), os);
+            os.str().find(" started program mongod ") != string::npos || die("MongodTest start error");
+            return os.str();
+        }
+        string stop(void) {
+            stringstream os, js;
+            ssclear(js) << "MongoRunner.stopMongod( " << opts << ", undefined, true );";
+            sh(js.str(), os);
+            os.str().find(" stopped mongo program ") != string::npos || die("MongodTest stop error");
+            return os.str();
+        }
+        string restart(void) {
+            stringstream os, js;
+            ssclear(js) << "try { " << var << ".adminCommand({ismaster: 1}); } catch (err) { " << var << " = startMongodTest( " << opts << " ); }";
+            sh(js.str(), os);
+            os.str().find("ismaster") != string::npos || os.str().find(" started program mongod ") != string::npos || die("MongodTest restart error");
+            return os.str();
+        }
+    };
+
+    const string mongo::MongodTest::Opts = "31000";
+
     class ReplSetTest : public ClusterTest {
     public:
         static const string Opts;
@@ -395,6 +445,8 @@ namespace mongo {
         }
     };
 
+    const string mongo::ReplSetTest::Opts = "{ name: 'test', nodes: 3, startPort: 31000 }";
+
     class ShardingTest : public ClusterTest {
     public:
         static const string Opts;
@@ -406,6 +458,8 @@ namespace mongo {
 
         }
     };
+
+    const string mongo::ShardingTest::Opts = "{ name: 'test', shards: 2, rs: { nodes: 3 }, mongos: 2, other: { separateConfig: true } }";
 
     class Orchestrator {
     public:
@@ -420,13 +474,6 @@ namespace mongo {
         }
     };
 
-    const uint16_t mongo::Shell::DefaultPort = 30001;
-    const int mongo::Shell::Retries = 10;
-    const string mongo::Shell::Prompt = "> ";
-    const string mongo::Shell::Bye = "bye\n";
-
-    const string mongo::ReplSetTest::Opts = "{ name: 'test', nodes: 3, startPort: 31000 }";
-    const string mongo::ShardingTest::Opts = "{ name: 'test', shards: 2, rs: { nodes: 3 }, mongos: 2, other: { separateConfig: true } }";
 }
 
 namespace mongo_test {
@@ -443,16 +490,25 @@ namespace mongo_test {
         delete ct;
         delete ms;
     }
+    TEST(MongodTest, Basic) {
+        Shell *ms = new Shell();
+        MongodTest *md = new MongodTest(ms);
+        md->start();
+
+        md->restart();
+        md->restart();
+
+        md->stop();
+        ms->stop();
+        delete md;
+        delete ms;
+    }
     TEST(ReplSetTest, Basic) {
         Shell *ms = new Shell();
-        string sResponse;
-        sResponse = ms->x_s("1+2");
-        ASSERT_EQUALS("3\n", sResponse);
+        ASSERT_EQUALS("3", ms->x_s("1+2"));
         ReplSetTest *rs = new ReplSetTest(ms);
-        bool exists = rs->exists();
-        ASSERT_EQUALS(0, exists);
-        stringstream ss;
-        sResponse = rs->start();
+        ASSERT_EQUALS(0, rs->exists());
+        rs->start();
 
         picojson::value jsonResponse;
         jsonResponse = rs->status();
@@ -465,7 +521,7 @@ namespace mongo_test {
         ASSERT_EQUALS(2, (int)secondaries.size());
         ASSERT_TRUE(rs->uri().find("mongodb://"));
 
-        sResponse = rs->stop();
+        rs->stop();
         ms->stop();
         delete rs;
         delete ms;
