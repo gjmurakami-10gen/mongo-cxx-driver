@@ -25,6 +25,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/param.h>
 
 #include <set>
 #include <string>
@@ -66,6 +67,19 @@ static int iscrlf( int c )
 static inline std::string& chomp(std::string &s) {
         s.erase(std::find_if(s.rbegin(), s.rend(), std::not1(std::ptr_fun<int, int>(iscrlf))).base(), s.end());
         return s;
+}
+
+static std::string getCurrentWorkingDirectory()
+{
+   char temp[MAXPATHLEN];
+   return ( getcwd(temp, MAXPATHLEN) ? std::string( temp ) : std::string("") );
+}
+
+static void mkdir_p(string path) {
+    struct stat statbuf;
+    if (stat(path.c_str(), &statbuf) == -1) {
+        system((string("mkdir -p ") + path + "; ls -l " + path).c_str());
+    }
 }
 
 static vector<string> &split(const string &s, char delim, vector<string> &elems) {
@@ -287,11 +301,14 @@ namespace mongo {
         Shell *ms;
         string var;
         string opts;
+        string dataPath;
 
-        ClusterTest(Shell *aMs, string anOpts) {
+        ClusterTest(Shell *aMs, string anOpts, string aDataPath = "") {
             ms = aMs;
             var = "ct";
             opts = anOpts;
+            dataPath = aDataPath.empty() ? getCurrentWorkingDirectory() + "/data/" : aDataPath;
+            mkdir_p(dataPath);
         }
         virtual ~ClusterTest(void) {
         }
@@ -315,7 +332,7 @@ namespace mongo {
             if (exists())
                 restart();
             else {
-                //FileUtils.mkdir_p(@opts[:dataPath])
+                mkdir_p(dataPath);
                 start();
             }
             return *this;
@@ -338,7 +355,7 @@ namespace mongo {
     public:
         static const string Opts;
 
-        MongodTest(Shell *aMs, string anOpts = Opts) : ClusterTest(aMs, anOpts) {
+        MongodTest(Shell *aMs, string anOpts = Opts, string aDataPath = "") : ClusterTest(aMs, anOpts, aDataPath) {
             var = "md";
         }
         ~MongodTest(void) {
@@ -346,6 +363,8 @@ namespace mongo {
         }
         string start(void) {
             stringstream os, js;
+            ssclear(js) << "MongoRunner.dataPath = \"" << dataPath << "\";";
+            sh(js.str(), os);
             ssclear(js) << "var " << var << " = new startMongodTest( " << opts << " );";
             sh(js.str(), os);
             os.str().find(" started program mongod ") != string::npos || die("MongodTest start error");
@@ -373,7 +392,7 @@ namespace mongo {
     public:
         static const string Opts;
 
-        ReplSetTest(Shell *aMs, string anOpts = Opts) : ClusterTest(aMs, anOpts) {
+        ReplSetTest(Shell *aMs, string anOpts = Opts, string aDataPath = "") : ClusterTest(aMs, anOpts, aDataPath) {
             var = "rs";
         }
         ~ReplSetTest(void) {
@@ -381,6 +400,8 @@ namespace mongo {
         }
         string start(void) {
             stringstream os, js;
+            ssclear(js) << "MongoRunner.dataPath = \"" << dataPath << "\";";
+            sh(js.str(), os);
             ssclear(js) << "var " << var << " = new ReplSetTest( " << opts << " );";
             sh(js.str(), os);
             ssclear(js) << var << ".startSet();";
@@ -451,11 +472,48 @@ namespace mongo {
     public:
         static const string Opts;
 
-        ShardingTest(Shell *aMs, string anOpts = Opts) : ClusterTest(aMs, anOpts) {
+        ShardingTest(Shell *aMs, string anOpts = Opts, string aDataPath = "") : ClusterTest(aMs, anOpts, aDataPath) {
             var = "sc";
         }
         ~ShardingTest(void) {
 
+        }
+        string start(void) {
+            stringstream os, js;
+            ssclear(js) << "MongoRunner.dataPath = \"" << dataPath << "\";";
+            sh(js.str(), os);
+            ssclear(js) << "var " << var << " = new ShardingTest( " << opts << " );";
+            sh(js.str(), os);
+            return os.str();
+        }
+        string stop(void) {
+            stringstream os, js;
+            ssclear(js) << var << ".stop();";
+            sh(js.str(), os);
+            os.str().find("*** ShardingTest test completed ") != string::npos || die("ShardingTest stop error");
+            return os.str();
+        }
+        string restart(void) {
+            stringstream os, js;
+            ssclear(js) << var << ".restartMongos();";
+            sh(js.str(), os);
+            return os.str();
+        }
+        vector<TestNode> mongos(void) {
+            stringstream js;
+            ssclear(js) << var << "._mongos;";
+            return TestNode::vFromStringList(this, x_json(js.str()));
+        }
+        string uri(void) {
+            stringstream ss;
+            ss << "mongodb:://";
+            vector<TestNode> vNodes = mongos();
+            string delim = "";
+            for (vector<TestNode>::iterator it = vNodes.begin(); it != vNodes.end(); it++) {
+                ss << delim << it->hostPort;
+                delim = ",";
+            }
+            return ss.str();
         }
     };
 
@@ -475,6 +533,18 @@ namespace mongo {
     };
 
 }
+
+/*
+ * This work is incomplete because we have shifted from the mongo shell to mongo-orchestration.
+ * However, the framework is in place, and it provides knowledge of what would be needed for the mongo shell.
+ * The following would be needed for use in a test framework, probably requiring a few hours more of work.
+ *     1. Complete TestNode / subclass methods start and stop
+ *     2. Complete ClusterTest subclass (MongodTest, ReplSetTest, ShardingTest) methods, ensureCluster tests
+ *     3. Orchestrator class wrapper / harness to unify Shell and ClusterTest (MongodTest, ReplSetTest, ShardingTest)
+ *     4. persistence feature with MONGO_SHUTDOWN
+ *     5. version feature with MONGOPATH
+ *     6. mods for Windows compatibility
+ */
 
 namespace mongo_test {
     using namespace mongo;
@@ -524,6 +594,21 @@ namespace mongo_test {
         rs->stop();
         ms->stop();
         delete rs;
+        delete ms;
+    }
+    TEST(ShardingTest, Basic) {
+        Shell *ms = new Shell();
+        ShardingTest *sc = new ShardingTest(ms);
+        ASSERT_EQUALS(0, sc->exists());
+        sc->start();
+
+        vector<TestNode> mongos = sc->mongos();
+        ASSERT_EQUALS(2, (int)mongos.size());
+        ASSERT_TRUE(sc->uri().find("mongodb://"));
+
+        sc->stop();
+        ms->stop();
+        delete sc;
         delete ms;
     }
     TEST(PicoJSON, Basic) {
